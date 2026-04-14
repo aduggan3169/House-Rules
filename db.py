@@ -10,7 +10,7 @@ and, if needed, the tiny engine-construction block at the top.
 from __future__ import annotations
 
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -30,13 +30,17 @@ _DEFAULT_TASKS: list[tuple[str, int]] = [
     ("Be kind & respectful", 4),
 ]
 
+# Reward type constants — kept here so app.py doesn't invent strings.
+REWARD_DAILY_SCREEN = "daily_screen"
+REWARD_WEEKLY_TREAT = "weekly_treat"
+REWARD_NINJA_TREAT = "ninja_treat"
+
 
 def _make_engine(url: str | None = None) -> Engine:
     """Create an Engine. For SQLite, ensure the parent dir exists and
     enable foreign keys (off by default in SQLite)."""
     url = url or os.environ.get("DATABASE_URL", _DEFAULT_URL)
     if url.startswith("sqlite"):
-        # sqlite:///./data/house_rules.db -> ./data/house_rules.db
         db_path = url.split("sqlite:///", 1)[-1]
         if db_path and db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -69,18 +73,23 @@ def get_engine() -> Engine:
 
 
 # --------------------------------------------------------------------------- #
+# Date helpers
+# --------------------------------------------------------------------------- #
+
+def week_start(day: date) -> date:
+    """Return the Monday of the week containing `day` (weekday()==0)."""
+    return day - timedelta(days=day.weekday())
+
+
+# --------------------------------------------------------------------------- #
 # Schema / seed
 # --------------------------------------------------------------------------- #
 
 def init_db(schema_path: str | Path | None = None) -> None:
-    """Apply schema.sql and ensure default tasks exist.
-
-    Idempotent: safe to call on every app start.
-    """
+    """Apply schema.sql and ensure default tasks exist. Idempotent."""
     schema_path = Path(schema_path or Path(__file__).parent / "schema.sql")
     sql = schema_path.read_text()
     with _engine.begin() as conn:
-        # SQLite driver can't handle multiple statements in one exec; split.
         for stmt in _split_sql(sql):
             if stmt.strip():
                 conn.execute(text(stmt))
@@ -88,14 +97,11 @@ def init_db(schema_path: str | Path | None = None) -> None:
 
 
 def _split_sql(sql: str) -> Iterable[str]:
-    """Naive split on ';' — fine for our DDL + INSERTs (no triggers, no
-    string literals containing semicolons)."""
     for chunk in sql.split(";"):
         yield chunk
 
 
 def _seed_default_tasks(conn) -> None:
-    """Insert default tasks only if the tasks table is empty."""
     count = conn.execute(text("SELECT COUNT(*) FROM tasks")).scalar_one()
     if count == 0:
         for label, order in _DEFAULT_TASKS:
@@ -193,3 +199,132 @@ def untick_task(kid_id: int, task_id: int, day: date) -> None:
             ),
             {"kid": kid_id, "task": task_id, "day": day.isoformat()},
         )
+
+
+# --------------------------------------------------------------------------- #
+# Ninja Mode
+# --------------------------------------------------------------------------- #
+
+def set_ninja_mode(
+    kid_id: int,
+    day: date,
+    maintained: bool,
+    note: str | None = None,
+) -> None:
+    """Upsert a ninja-mode row for a given kid on a given day."""
+    with _engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ninja_mode_days (kid_id, day, maintained, note) "
+                "VALUES (:kid, :day, :m, :note) "
+                "ON CONFLICT (kid_id, day) DO UPDATE SET "
+                "  maintained = excluded.maintained, "
+                "  note = excluded.note"
+            ),
+            {
+                "kid": kid_id,
+                "day": day.isoformat(),
+                "m": 1 if maintained else 0,
+                "note": note,
+            },
+        )
+
+
+def clear_ninja_mode(kid_id: int, day: date) -> None:
+    """Remove the ninja-mode row for a given kid on a given day. Idempotent."""
+    with _engine.begin() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM ninja_mode_days "
+                "WHERE kid_id = :kid AND day = :day"
+            ),
+            {"kid": kid_id, "day": day.isoformat()},
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Derived eligibility (pure functions over tick tables)
+# --------------------------------------------------------------------------- #
+
+def daily_screen_earned(kid_id: int, day: date) -> bool:
+    """True iff every active task has been ticked for this kid on this day."""
+    tasks = list_tasks()
+    if not tasks:
+        return False
+    state = get_day(kid_id, day)
+    return all(t["id"] in state["completions"] for t in tasks)
+
+
+def week_days_complete(kid_id: int, week_start_day: date) -> int:
+    """Count of days in the Mon..Sun week where all active tasks were ticked."""
+    return sum(
+        1
+        for i in range(7)
+        if daily_screen_earned(kid_id, week_start_day + timedelta(days=i))
+    )
+
+
+def week_complete(kid_id: int, week_start_day: date) -> bool:
+    """True iff every day of the week has all active tasks ticked."""
+    return week_days_complete(kid_id, week_start_day) == 7
+
+
+def ninja_streak_intact(kid_id: int, week_start_day: date) -> bool:
+    """True iff the week has at least one ninja day and all are maintained.
+
+    A week with no ninja days returns False — there's no bonus to earn if
+    Ninja Mode was never activated.
+    """
+    week_end = week_start_day + timedelta(days=7)
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT maintained FROM ninja_mode_days "
+                "WHERE kid_id = :kid AND day >= :start AND day < :end"
+            ),
+            {
+                "kid": kid_id,
+                "start": week_start_day.isoformat(),
+                "end": week_end.isoformat(),
+            },
+        ).all()
+    if not rows:
+        return False
+    return all(r[0] == 1 for r in rows)
+
+
+# --------------------------------------------------------------------------- #
+# Rewards ledger
+# --------------------------------------------------------------------------- #
+
+def reward_claimed(kid_id: int, reward_type: str, period_start: date) -> bool:
+    with _engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT 1 FROM rewards_claimed "
+                "WHERE kid_id = :k AND reward_type = :t AND period_start = :d"
+            ),
+            {"k": kid_id, "t": reward_type, "d": period_start.isoformat()},
+        ).first()
+    return row is not None
+
+
+def claim_reward(kid_id: int, reward_type: str, period_start: date) -> bool:
+    """Record a reward claim. Returns False if already claimed."""
+    if reward_claimed(kid_id, reward_type, period_start):
+        return False
+    with _engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO rewards_claimed "
+                "(kid_id, reward_type, period_start, claimed_at) "
+                "VALUES (:k, :t, :d, :ts)"
+            ),
+            {
+                "k": kid_id,
+                "t": reward_type,
+                "d": period_start.isoformat(),
+                "ts": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+    return True
