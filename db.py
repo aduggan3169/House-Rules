@@ -270,11 +270,7 @@ def week_complete(kid_id: int, week_start_day: date) -> bool:
 
 
 def ninja_streak_intact(kid_id: int, week_start_day: date) -> bool:
-    """True iff the week has at least one ninja day and all are maintained.
-
-    A week with no ninja days returns False — there's no bonus to earn if
-    Ninja Mode was never activated.
-    """
+    """True iff the week has at least one ninja day and all are maintained."""
     week_end = week_start_day + timedelta(days=7)
     with _engine.connect() as conn:
         rows = conn.execute(
@@ -328,3 +324,88 @@ def claim_reward(kid_id: int, reward_type: str, period_start: date) -> bool:
             },
         )
     return True
+
+
+# --------------------------------------------------------------------------- #
+# Admin (PIN-gated in the UI; no auth enforcement at this layer)
+# --------------------------------------------------------------------------- #
+
+def reset_day(kid_id: int, day: date) -> None:
+    """Delete all task completions and any ninja row for (kid, day). Idempotent."""
+    with _engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM task_completions WHERE kid_id = :k AND day = :d"),
+            {"k": kid_id, "d": day.isoformat()},
+        )
+        conn.execute(
+            text("DELETE FROM ninja_mode_days WHERE kid_id = :k AND day = :d"),
+            {"k": kid_id, "d": day.isoformat()},
+        )
+
+
+def revoke_reward(kid_id: int, reward_type: str, period_start: date) -> bool:
+    """Delete a reward claim. Returns True iff a row was deleted."""
+    with _engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "DELETE FROM rewards_claimed "
+                "WHERE kid_id = :k AND reward_type = :t AND period_start = :d"
+            ),
+            {"k": kid_id, "t": reward_type, "d": period_start.isoformat()},
+        )
+    return result.rowcount > 0
+
+
+def add_task(label: str) -> int:
+    """Append a new active task at the end. Returns its id."""
+    with _engine.begin() as conn:
+        max_order = conn.execute(
+            text("SELECT COALESCE(MAX(display_order), 0) FROM tasks")
+        ).scalar_one()
+        result = conn.execute(
+            text(
+                "INSERT INTO tasks (label, display_order, active) "
+                "VALUES (:label, :order, 1)"
+            ),
+            {"label": label, "order": max_order + 1},
+        )
+        return int(result.lastrowid)
+
+
+def rename_task(task_id: int, new_label: str) -> None:
+    with _engine.begin() as conn:
+        conn.execute(
+            text("UPDATE tasks SET label = :l WHERE id = :i"),
+            {"l": new_label, "i": task_id},
+        )
+
+
+def deactivate_task(task_id: int) -> None:
+    """Hide a task from the tick view. History is preserved."""
+    with _engine.begin() as conn:
+        conn.execute(
+            text("UPDATE tasks SET active = 0 WHERE id = :i"),
+            {"i": task_id},
+        )
+
+
+def reactivate_task(task_id: int) -> None:
+    with _engine.begin() as conn:
+        conn.execute(
+            text("UPDATE tasks SET active = 1 WHERE id = :i"),
+            {"i": task_id},
+        )
+
+
+def reorder_tasks(order: list[int]) -> None:
+    """Reassign display_order from the given sequence of task ids.
+
+    Position 0 in the list becomes display_order 1, position 1 becomes 2, etc.
+    Task ids not present in `order` are left untouched.
+    """
+    with _engine.begin() as conn:
+        for i, task_id in enumerate(order, start=1):
+            conn.execute(
+                text("UPDATE tasks SET display_order = :o WHERE id = :i"),
+                {"o": i, "i": task_id},
+            )
