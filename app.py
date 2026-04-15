@@ -1,21 +1,22 @@
-"""Streamlit UI for the House Rules app — Phase 4.
+"""Streamlit UI for the House Rules app — Phase 5.
 
-What's new vs Phase 3:
-- Parent PIN gate in the sidebar (bcrypt-checked against PARENT_PIN_HASH)
-- Admin panel (main page, PIN-gated) with three tabs:
-    - Reset day: clear ticks and ninja for a kid/day
-    - Revoke claim: delete a row from the rewards ledger
-    - Manage tasks: add, rename, reorder, deactivate, reactivate
+What's new vs Phase 4:
+- Two top-level tabs: Today (the daily tick view) and History (weekly heatmap).
+- Per-kid theming: a coloured dot next to each name (Cillian = blue, Fionn = green).
+- History view: week navigator (prev/next), styled per-day heatmap, ninja row,
+  and a weekly rewards ledger.
+- Light polish: toast feedback on reward claims (balloons still fire for the
+  moment a day first goes complete, which is the bigger emotional beat).
 
 Still deferred:
-- Weekly history heatmap and theming polish (Phase 5)
-- Cloud migration (Phase 6)
+- Cloud migration (Phase 6): Supabase Postgres + Streamlit Community Cloud.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
+import pandas as pd
 import streamlit as st
 
 import auth
@@ -24,6 +25,31 @@ import db
 st.set_page_config(page_title="House Rules", page_icon="🏡", layout="wide")
 
 db.init_db()
+
+
+# --------------------------------------------------------------------------- #
+# Theming
+# --------------------------------------------------------------------------- #
+
+# Per-kid accent. The emoji is visible in every Streamlit surface; the color
+# is used by the heatmap styler. Keep these subtle — this is a family app,
+# not a dashboard.
+KID_THEMES: dict[str, dict] = {
+    "Cillian": {"emoji": "🔵", "color": "#3b82f6"},
+    "Fionn": {"emoji": "🟢", "color": "#10b981"},
+}
+_DEFAULT_THEME = {"emoji": "⚪", "color": "#64748b"}
+
+
+def _theme_for(name: str) -> dict:
+    return KID_THEMES.get(name, _DEFAULT_THEME)
+
+
+_REWARD_LABELS = {
+    db.REWARD_DAILY_SCREEN: "Daily screen time",
+    db.REWARD_WEEKLY_TREAT: "Weekly treat",
+    db.REWARD_NINJA_TREAT: "Ninja treat",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -72,7 +98,6 @@ with st.sidebar:
 # --------------------------------------------------------------------------- #
 
 st.title("🏡 House Rules")
-st.caption(f"**{selected_day.strftime('%A, %d %B %Y')}**")
 
 kids = db.list_kids()
 tasks = db.list_tasks()
@@ -81,29 +106,10 @@ week_start_day = db.week_start(selected_day)
 if not kids:
     st.error("No kids found in the database. Check schema.sql seed rows.")
     st.stop()
-if not tasks:
-    st.error("No active tasks found. Use Admin → Manage tasks to add some.")
-    # We don't st.stop here because unlocking admin still needs to be possible.
-
-
-# Fire balloons once per (kid, day) on the transition from incomplete to
-# complete. Seed the flag to "already celebrated" when the user opens a day
-# that's already complete, so we don't spam confetti just for viewing it.
-if tasks:
-    for kid in kids:
-        flag_key = f"celebrated_{kid['id']}_{selected_day.isoformat()}"
-        currently_complete = db.daily_screen_earned(kid["id"], selected_day)
-        if flag_key not in st.session_state:
-            st.session_state[flag_key] = currently_complete
-        elif currently_complete and not st.session_state[flag_key]:
-            st.balloons()
-            st.session_state[flag_key] = True
-        elif not currently_complete:
-            st.session_state[flag_key] = False
 
 
 # --------------------------------------------------------------------------- #
-# Per-kid renderers
+# "Today" tab — per-kid renderers
 # --------------------------------------------------------------------------- #
 
 def _render_tasks(kid: dict, day: date, tasks: list[dict], completions: dict) -> None:
@@ -143,7 +149,7 @@ def _render_daily_reward(kid: dict, day: date, is_earned: bool) -> None:
             use_container_width=True,
         ):
             db.claim_reward(kid["id"], db.REWARD_DAILY_SCREEN, day)
-            st.balloons()
+            st.toast(f"🎮 Screen time claimed for {kid['name']}")
             st.rerun()
     else:
         st.caption("🎮 Complete all tasks to earn screen time")
@@ -214,6 +220,7 @@ def _render_weekly_summary(kid: dict, week_start_day: date) -> None:
             ):
                 db.claim_reward(kid["id"], db.REWARD_WEEKLY_TREAT, week_start_day)
                 st.balloons()
+                st.toast(f"🍭 Weekly treat for {kid['name']}!")
                 st.rerun()
 
     if db.ninja_streak_intact(kid["id"], week_start_day):
@@ -229,16 +236,18 @@ def _render_weekly_summary(kid: dict, week_start_day: date) -> None:
             ):
                 db.claim_reward(kid["id"], db.REWARD_NINJA_TREAT, week_start_day)
                 st.balloons()
+                st.toast(f"🥷 Ninja treat for {kid['name']}!")
                 st.rerun()
 
 
-def _render_kid(kid: dict, day: date, tasks: list[dict], week_start_day: date) -> None:
+def _render_kid_today(kid: dict, day: date, tasks: list[dict], week_start_day: date) -> None:
     day_state = db.get_day(kid["id"], day)
     completions = day_state["completions"]
     ninja = day_state["ninja"]
     is_earned = db.daily_screen_earned(kid["id"], day) if tasks else False
+    theme = _theme_for(kid["name"])
 
-    st.subheader(kid["name"])
+    st.subheader(f"{theme['emoji']} {kid['name']}")
     _render_tasks(kid, day, tasks, completions)
     st.divider()
     _render_daily_reward(kid, day, is_earned)
@@ -247,23 +256,170 @@ def _render_kid(kid: dict, day: date, tasks: list[dict], week_start_day: date) -
     _render_weekly_summary(kid, week_start_day)
 
 
-if tasks:
+def _render_today_tab(
+    kids: list[dict], tasks: list[dict], day: date, week_start_day: date
+) -> None:
+    st.caption(f"**{day.strftime('%A, %d %B %Y')}**")
+
+    if not tasks:
+        st.warning("No active tasks. Unlock Admin → Manage tasks to add some.")
+        return
+
+    # Balloons once per (kid, day) on the transition from incomplete to
+    # complete. Seed to "already celebrated" on first view of a done day.
+    for kid in kids:
+        flag_key = f"celebrated_{kid['id']}_{day.isoformat()}"
+        currently_complete = db.daily_screen_earned(kid["id"], day)
+        if flag_key not in st.session_state:
+            st.session_state[flag_key] = currently_complete
+        elif currently_complete and not st.session_state[flag_key]:
+            st.balloons()
+            st.session_state[flag_key] = True
+        elif not currently_complete:
+            st.session_state[flag_key] = False
+
     cols = st.columns(len(kids))
     for col, kid in zip(cols, kids):
         with col:
-            _render_kid(kid, selected_day, tasks, week_start_day)
+            _render_kid_today(kid, day, tasks, week_start_day)
 
 
 # --------------------------------------------------------------------------- #
-# Admin panel (PIN-gated)
+# "History" tab — weekly heatmap per kid
 # --------------------------------------------------------------------------- #
 
-_REWARD_LABELS = {
-    db.REWARD_DAILY_SCREEN: "Daily screen time",
-    db.REWARD_WEEKLY_TREAT: "Weekly treat",
-    db.REWARD_NINJA_TREAT: "Ninja treat",
-}
+def _heatmap_styler(summary: list[dict]) -> pd.io.formats.style.Styler:
+    """Build a two-row DataFrame (Tasks, Ninja) styled as a heatmap."""
+    day_labels = [s["day"].strftime("%a %d") for s in summary]
+    task_values = [f"{s['done']}/{s['total']}" for s in summary]
+    ninja_values = []
+    for s in summary:
+        if s["ninja"] is None:
+            ninja_values.append("")
+        elif s["ninja"]["maintained"]:
+            ninja_values.append("🥷")
+        else:
+            ninja_values.append("💥")
 
+    df = pd.DataFrame(
+        [task_values, ninja_values],
+        index=["Tasks", "Ninja"],
+        columns=day_labels,
+    )
+
+    def _color_tasks(val: str) -> str:
+        if "/" not in str(val):
+            return ""
+        try:
+            done_s, total_s = val.split("/")
+            done, total = int(done_s), int(total_s)
+        except ValueError:
+            return ""
+        if total == 0:
+            return ""
+        pct = done / total
+        if pct >= 1:
+            return "background-color: #d1fae5; color: #065f46; font-weight: 600"
+        if pct == 0:
+            return "background-color: #fee2e2; color: #991b1b"
+        return "background-color: #fef3c7; color: #92400e"
+
+    # Streamlit's pandas ships modern enough to use Styler.map (>= pandas 2.1).
+    # Fall back to applymap on older installs.
+    styler = df.style
+    try:
+        styler = styler.map(_color_tasks, subset=pd.IndexSlice[["Tasks"], :])
+    except AttributeError:  # pragma: no cover - older pandas
+        styler = styler.applymap(_color_tasks, subset=pd.IndexSlice[["Tasks"], :])
+    return styler
+
+
+def _render_kid_history(kid: dict, shown_week: date) -> None:
+    theme = _theme_for(kid["name"])
+    st.markdown(f"### {theme['emoji']} {kid['name']}")
+
+    summary = db.get_week_summary(kid["id"], shown_week)
+    total_tasks = summary[0]["total"] if summary else 0
+
+    days_complete = sum(1 for s in summary if s["all_done"])
+    ninja_on = sum(1 for s in summary if s["ninja"] is not None)
+    ninja_broken = sum(1 for s in summary if s["ninja"] and not s["ninja"]["maintained"])
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Days complete", f"{days_complete}/7")
+    m2.metric("Ninja days", ninja_on)
+    m3.metric("Ninja broken", ninja_broken)
+
+    if total_tasks == 0:
+        st.caption("_No active tasks configured, so there's nothing to count._")
+    else:
+        st.dataframe(_heatmap_styler(summary), use_container_width=True)
+
+    # Ninja notes for the week — only show rows that have a note.
+    notes = [(s["day"], s["ninja"]["note"]) for s in summary if s["ninja"] and s["ninja"]["note"]]
+    if notes:
+        with st.expander("🥷 Ninja notes", expanded=False):
+            for d, note in notes:
+                st.markdown(f"- **{d.strftime('%a %d %b')}** — {note}")
+
+    # Weekly rewards ledger.
+    week_end = shown_week + timedelta(days=7)
+    claims = db.list_reward_claims(kid["id"], shown_week, week_end)
+    if claims:
+        badges = []
+        for c in claims:
+            label = _REWARD_LABELS.get(c["reward_type"], c["reward_type"])
+            badges.append(f"✅ {label} ({c['period_start']})")
+        st.caption("  ·  ".join(badges))
+    else:
+        st.caption("_No rewards claimed this week._")
+
+
+def _render_history_tab(kids: list[dict], current_week_start: date) -> None:
+    # Track the displayed week in session state so prev/next keep context.
+    if "history_week" not in st.session_state:
+        st.session_state["history_week"] = current_week_start
+
+    shown = st.session_state["history_week"]
+    today_week = db.week_start(date.today())
+    next_disabled = shown + timedelta(days=7) > today_week
+
+    nav_prev, nav_label, nav_next = st.columns([1, 3, 1])
+    with nav_prev:
+        if st.button("← Previous week", use_container_width=True, key="hist_prev"):
+            st.session_state["history_week"] = shown - timedelta(days=7)
+            st.rerun()
+    with nav_label:
+        week_end = shown + timedelta(days=6)
+        st.markdown(
+            f"#### Week of **{shown.strftime('%a %d %b %Y')}** "
+            f"→ {week_end.strftime('%a %d %b')}"
+        )
+    with nav_next:
+        if st.button(
+            "Next week →",
+            use_container_width=True,
+            key="hist_next",
+            disabled=next_disabled,
+        ):
+            st.session_state["history_week"] = shown + timedelta(days=7)
+            st.rerun()
+
+    if st.button("Jump to this week", key="hist_today"):
+        st.session_state["history_week"] = today_week
+        st.rerun()
+
+    st.divider()
+
+    cols = st.columns(len(kids))
+    for col, kid in zip(cols, kids):
+        with col:
+            _render_kid_history(kid, st.session_state["history_week"])
+
+
+# --------------------------------------------------------------------------- #
+# Admin panel (PIN-gated, lives below the tabs)
+# --------------------------------------------------------------------------- #
 
 def _kid_name(kids: list[dict], kid_id: int) -> str:
     return next(k["name"] for k in kids if k["id"] == kid_id)
@@ -430,6 +586,19 @@ def _render_admin(
         _render_revoke_claim(kids, selected_day, week_start_day)
     with tab_tasks:
         _render_manage_tasks()
+
+
+# --------------------------------------------------------------------------- #
+# Layout: top-level tabs + admin
+# --------------------------------------------------------------------------- #
+
+tab_today, tab_history = st.tabs(["📆 Today", "📈 History"])
+
+with tab_today:
+    _render_today_tab(kids, tasks, selected_day, week_start_day)
+
+with tab_history:
+    _render_history_tab(kids, week_start_day)
 
 
 if st.session_state.get("admin"):
