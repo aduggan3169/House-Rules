@@ -1,18 +1,22 @@
-"""Streamlit UI for the House Rules app — Phase 5.
+"""Streamlit UI for the House Rules app — Phase 5 (mobile-first polish).
 
-What's new vs Phase 4:
-- Two top-level tabs: Today (the daily tick view) and History (weekly heatmap).
-- Per-kid theming: a coloured dot next to each name (Cillian = blue, Fionn = green).
-- History view: week navigator (prev/next), styled per-day heatmap, ninja row,
-  and a weekly rewards ledger.
-- Light polish: toast feedback on reward claims (balloons still fire for the
-  moment a day first goes complete, which is the bigger emotional beat).
+Phase 5 adds:
+- Kid-friendly, mobile-first CSS theme (big touch targets, rounded cards,
+  gradient progress bar, playful buttons).
+- Top-level Today / History tabs; per-kid nested tabs inside each, so a phone
+  user gets a full-width view per kid with a single tap.
+- Main-area day selector with a "📅 Today" reset button (sidebar reserved
+  for Refresh and Admin, which parents rarely need).
+- Per-kid colour-coded names using Streamlit's colour markdown.
+- History view: week navigator + styled heatmap + weekly rewards ledger.
 
 Still deferred:
 - Cloud migration (Phase 6): Supabase Postgres + Streamlit Community Cloud.
 """
 
 from __future__ import annotations
+
+APP_VERSION = "1.0.0"
 
 from datetime import date, timedelta
 
@@ -22,27 +26,242 @@ import streamlit as st
 import auth
 import db
 
-st.set_page_config(page_title="House Rules", page_icon="🏡", layout="wide")
+st.set_page_config(page_title="House Rules", page_icon="🏡", layout="centered")
 
 db.init_db()
+
+
+# --------------------------------------------------------------------------- #
+# CSS — kid-friendly + mobile-first
+# --------------------------------------------------------------------------- #
+
+_CSS = """
+<style>
+/* ----- Type + rhythm ----- */
+html, body, .stApp, [class*="st-"] {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+                 "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+/* Reclaim vertical space on phones */
+.stApp [data-testid="stMainBlockContainer"],
+.stApp .block-container,
+section.main > div.block-container {
+    padding-top: 1.25rem !important;
+    padding-bottom: 3rem !important;
+    max-width: 720px !important;
+}
+
+/* ----- Title — soft gradient ----- */
+h1 {
+    font-size: 2rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #6366f1, #ec4899, #f59e0b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.5rem !important;
+}
+h2 { font-size: 1.5rem !important; font-weight: 700 !important; }
+h3 { font-size: 1.3rem !important; font-weight: 700 !important; margin: 0.5rem 0 0.75rem !important; }
+
+/* ----- Checkboxes — big, soft, tappable ----- */
+[data-testid="stCheckbox"] {
+    background: #fafafa;
+    border: 2px solid #e5e7eb;
+    border-radius: 18px;
+    padding: 14px 18px;
+    margin: 8px 0;
+    transition: all 0.2s ease;
+}
+[data-testid="stCheckbox"]:hover {
+    border-color: #c7d2fe;
+    background: #f5f3ff;
+}
+[data-testid="stCheckbox"] label {
+    font-size: 1.15rem !important;
+    font-weight: 500 !important;
+    color: #1f2937 !important;
+    cursor: pointer !important;
+    width: 100%;
+}
+[data-testid="stCheckbox"] label > div[data-baseweb="checkbox"] > div:first-child {
+    transform: scale(1.4);
+    margin-right: 6px;
+}
+/* Green-wash on check. :has() is supported in all modern mobile browsers. */
+[data-testid="stCheckbox"]:has(input:checked) {
+    background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+    border-color: #6ee7b7;
+}
+[data-testid="stCheckbox"]:has(input:checked) label p {
+    text-decoration: line-through;
+    text-decoration-color: #10b981;
+    text-decoration-thickness: 2px;
+    color: #065f46 !important;
+}
+
+/* ----- Progress bar — chunky, animated gradient ----- */
+[data-testid="stProgress"] > div > div {
+    height: 16px !important;
+    border-radius: 999px;
+    background: #e5e7eb;
+    overflow: hidden;
+}
+[data-testid="stProgress"] > div > div > div > div {
+    background: linear-gradient(90deg, #60a5fa, #a78bfa, #34d399) !important;
+    border-radius: 999px;
+    background-size: 200% 100%;
+    animation: hr-shimmer 3s ease-in-out infinite;
+}
+@keyframes hr-shimmer {
+    0%, 100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+}
+
+/* ----- Buttons — rounded pills; primary pops ----- */
+[data-testid="stButton"] > button,
+[data-testid="stFormSubmitButton"] > button {
+    border-radius: 999px !important;
+    font-weight: 600 !important;
+    padding: 0.55rem 1.2rem !important;
+    border: 2px solid #e5e7eb !important;
+    transition: all 0.15s ease !important;
+}
+[data-testid="stButton"] > button:hover:not(:disabled),
+[data-testid="stFormSubmitButton"] > button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+}
+[data-testid="stButton"] > button[kind="primary"],
+[data-testid="stFormSubmitButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg, #6366f1, #a855f7) !important;
+    border: none !important;
+    color: white !important;
+    font-size: 1.1rem !important;
+    padding: 0.85rem 1.5rem !important;
+    box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35) !important;
+}
+[data-testid="stButton"] > button[kind="primary"]:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(99, 102, 241, 0.45) !important;
+}
+
+/* ----- Toggle ----- */
+[data-testid="stToggle"] label {
+    font-size: 1.05rem !important;
+    font-weight: 500 !important;
+}
+
+/* ----- Alert boxes (success/info/warning) ----- */
+[data-testid="stAlert"] {
+    border-radius: 14px !important;
+    font-weight: 500;
+    padding: 0.9rem 1rem !important;
+}
+
+/* ----- Tabs — large, touch-friendly, coloured selection ----- */
+[data-testid="stTabs"] [role="tablist"] {
+    gap: 0.35rem;
+    border-bottom: 2px solid #f1f5f9;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+[data-testid="stTabs"] [role="tablist"]::-webkit-scrollbar { display: none; }
+[data-testid="stTabs"] [role="tab"] {
+    font-size: 1.02rem !important;
+    font-weight: 600 !important;
+    padding: 0.7rem 1.1rem !important;
+    border-radius: 12px 12px 0 0 !important;
+    white-space: nowrap !important;
+}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+    background: #eef2ff !important;
+    color: #4338ca !important;
+}
+
+/* ----- Metric cards ----- */
+[data-testid="stMetric"] {
+    background: #f8fafc;
+    border-radius: 14px;
+    padding: 0.75rem 1rem;
+    border: 1px solid #f1f5f9;
+}
+[data-testid="stMetricValue"] {
+    font-size: 1.75rem !important;
+    font-weight: 700 !important;
+}
+
+/* ----- Dataframe / heatmap ----- */
+[data-testid="stDataFrame"] {
+    border-radius: 12px;
+    overflow: hidden;
+    font-size: 1rem;
+}
+
+/* ----- Date input, selectbox, text input — rounded ----- */
+[data-testid="stDateInput"] input,
+[data-testid="stTextInput"] input,
+[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    border-radius: 14px !important;
+    font-size: 1.05rem !important;
+}
+
+/* ===== Mobile tweaks ===== */
+@media (max-width: 640px) {
+    h1 { font-size: 1.65rem !important; }
+    h3 { font-size: 1.2rem !important; }
+
+    .stApp [data-testid="stMainBlockContainer"],
+    .stApp .block-container {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+    }
+
+    [data-testid="stCheckbox"] {
+        padding: 16px 18px;
+    }
+    [data-testid="stCheckbox"] label {
+        font-size: 1.2rem !important;
+    }
+
+    [data-testid="stButton"] > button[kind="primary"],
+    [data-testid="stFormSubmitButton"] > button[kind="primary"] {
+        width: 100%;
+        font-size: 1.15rem !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 1.35rem !important;
+    }
+}
+</style>
+"""
+
+st.markdown(_CSS, unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------- #
 # Theming
 # --------------------------------------------------------------------------- #
 
-# Per-kid accent. The emoji is visible in every Streamlit surface; the color
-# is used by the heatmap styler. Keep these subtle — this is a family app,
-# not a dashboard.
+# Per-kid accent. `md_color` maps to Streamlit's colour-markdown palette:
+# blue, green, orange, red, violet, gray, rainbow.
 KID_THEMES: dict[str, dict] = {
-    "Cillian": {"emoji": "🔵", "color": "#3b82f6"},
-    "Fionn": {"emoji": "🟢", "color": "#10b981"},
+    "Cillian": {"emoji": "🔵", "color": "#3b82f6", "md_color": "blue"},
+    "Fionn": {"emoji": "🟢", "color": "#10b981", "md_color": "green"},
 }
-_DEFAULT_THEME = {"emoji": "⚪", "color": "#64748b"}
+_DEFAULT_THEME = {"emoji": "⚪", "color": "#64748b", "md_color": "gray"}
 
 
 def _theme_for(name: str) -> dict:
     return KID_THEMES.get(name, _DEFAULT_THEME)
+
+
+def _tab_label(kid: dict) -> str:
+    """Emoji + name, used for per-kid nested tab titles."""
+    return f"{_theme_for(kid['name'])['emoji']} {kid['name']}"
 
 
 _REWARD_LABELS = {
@@ -53,16 +272,15 @@ _REWARD_LABELS = {
 
 
 # --------------------------------------------------------------------------- #
-# Sidebar
+# Sidebar — Refresh + Admin only. Day picker is in the main area.
 # --------------------------------------------------------------------------- #
 
 with st.sidebar:
     st.header("🏡 House Rules")
-    selected_day: date = st.date_input("Day", value=date.today())
 
     st.caption(
-        "Tick boxes as each rule is done. Ticks save immediately. "
-        "If another parent has made changes on their device, click Refresh."
+        "Ticks save immediately. If another parent is ticking on their phone, "
+        "tap Refresh to pull the latest."
     )
 
     if st.button("🔄 Refresh", use_container_width=True):
@@ -73,7 +291,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Admin unlock / lock
     if not auth.pin_is_configured():
         st.caption("⚙️ Admin disabled. Set `PARENT_PIN_HASH` in `.env` to enable.")
     elif st.session_state.get("admin"):
@@ -92,24 +309,48 @@ with st.sidebar:
                 else:
                     st.error("Incorrect PIN")
 
+    st.divider()
+    st.caption(f"v{APP_VERSION}")
+
 
 # --------------------------------------------------------------------------- #
-# Main header
+# Main header + day selector
 # --------------------------------------------------------------------------- #
 
 st.title("🏡 House Rules")
 
 kids = db.list_kids()
 tasks = db.list_tasks()
-week_start_day = db.week_start(selected_day)
 
 if not kids:
     st.error("No kids found in the database. Check schema.sql seed rows.")
     st.stop()
 
+# Main-area day selector. Sidebar is inconvenient on a phone, so this is the
+# primary control for switching days. `selected_day` lives in session_state
+# so the "Today" quick-reset works cleanly.
+day_col, today_col = st.columns([3, 2])
+with day_col:
+    selected_day: date = st.date_input(
+        "Day",
+        value=st.session_state.get("selected_day", date.today()),
+        key="selected_day",
+        label_visibility="collapsed",
+    )
+with today_col:
+    if st.button(
+        "📅 Today",
+        use_container_width=True,
+        disabled=(selected_day == date.today()),
+    ):
+        st.session_state.pop("selected_day", None)
+        st.rerun()
+
+week_start_day = db.week_start(selected_day)
+
 
 # --------------------------------------------------------------------------- #
-# "Today" tab — per-kid renderers
+# "Today" tab — per-kid renderers (nested tabs per kid)
 # --------------------------------------------------------------------------- #
 
 def _render_tasks(kid: dict, day: date, tasks: list[dict], completions: dict) -> None:
@@ -140,7 +381,7 @@ def _render_daily_reward(kid: dict, day: date, is_earned: bool) -> None:
     claimed = db.reward_claimed(kid["id"], db.REWARD_DAILY_SCREEN, day)
 
     if claimed:
-        st.success("🎮 Screen time claimed")
+        st.success("🎮 Screen time claimed — enjoy!")
     elif is_earned:
         if st.button(
             "🎮 Claim screen time",
@@ -149,7 +390,7 @@ def _render_daily_reward(kid: dict, day: date, is_earned: bool) -> None:
             use_container_width=True,
         ):
             db.claim_reward(kid["id"], db.REWARD_DAILY_SCREEN, day)
-            st.toast(f"🎮 Screen time claimed for {kid['name']}")
+            st.toast(f"🎮 Screen time for {kid['name']}!")
             st.rerun()
     else:
         st.caption("🎮 Complete all tasks to earn screen time")
@@ -241,15 +482,16 @@ def _render_weekly_summary(kid: dict, week_start_day: date) -> None:
 
 
 def _render_kid_today(kid: dict, day: date, tasks: list[dict], week_start_day: date) -> None:
+    theme = _theme_for(kid["name"])
+    st.markdown(f"### {theme['emoji']} :{theme['md_color']}[{kid['name']}]")
+
     day_state = db.get_day(kid["id"], day)
     completions = day_state["completions"]
     ninja = day_state["ninja"]
     is_earned = db.daily_screen_earned(kid["id"], day) if tasks else False
-    theme = _theme_for(kid["name"])
 
-    st.subheader(f"{theme['emoji']} {kid['name']}")
     _render_tasks(kid, day, tasks, completions)
-    st.divider()
+    st.write("")  # small gap
     _render_daily_reward(kid, day, is_earned)
     _render_ninja_controls(kid, day, ninja)
     st.divider()
@@ -266,7 +508,8 @@ def _render_today_tab(
         return
 
     # Balloons once per (kid, day) on the transition from incomplete to
-    # complete. Seed to "already celebrated" on first view of a done day.
+    # complete. Runs for all kids so the celebration fires regardless of
+    # which nested tab is active.
     for kid in kids:
         flag_key = f"celebrated_{kid['id']}_{day.isoformat()}"
         currently_complete = db.daily_screen_earned(kid["id"], day)
@@ -278,14 +521,14 @@ def _render_today_tab(
         elif not currently_complete:
             st.session_state[flag_key] = False
 
-    cols = st.columns(len(kids))
-    for col, kid in zip(cols, kids):
-        with col:
+    kid_tabs = st.tabs([_tab_label(k) for k in kids])
+    for tab, kid in zip(kid_tabs, kids):
+        with tab:
             _render_kid_today(kid, day, tasks, week_start_day)
 
 
 # --------------------------------------------------------------------------- #
-# "History" tab — weekly heatmap per kid
+# "History" tab — weekly heatmap per kid (nested tabs per kid)
 # --------------------------------------------------------------------------- #
 
 def _heatmap_styler(summary: list[dict]) -> pd.io.formats.style.Styler:
@@ -319,13 +562,11 @@ def _heatmap_styler(summary: list[dict]) -> pd.io.formats.style.Styler:
             return ""
         pct = done / total
         if pct >= 1:
-            return "background-color: #d1fae5; color: #065f46; font-weight: 600"
+            return "background-color: #d1fae5; color: #065f46; font-weight: 700"
         if pct == 0:
             return "background-color: #fee2e2; color: #991b1b"
         return "background-color: #fef3c7; color: #92400e"
 
-    # Streamlit's pandas ships modern enough to use Styler.map (>= pandas 2.1).
-    # Fall back to applymap on older installs.
     styler = df.style
     try:
         styler = styler.map(_color_tasks, subset=pd.IndexSlice[["Tasks"], :])
@@ -336,7 +577,7 @@ def _heatmap_styler(summary: list[dict]) -> pd.io.formats.style.Styler:
 
 def _render_kid_history(kid: dict, shown_week: date) -> None:
     theme = _theme_for(kid["name"])
-    st.markdown(f"### {theme['emoji']} {kid['name']}")
+    st.markdown(f"### {theme['emoji']} :{theme['md_color']}[{kid['name']}]")
 
     summary = db.get_week_summary(kid["id"], shown_week)
     total_tasks = summary[0]["total"] if summary else 0
@@ -346,7 +587,7 @@ def _render_kid_history(kid: dict, shown_week: date) -> None:
     ninja_broken = sum(1 for s in summary if s["ninja"] and not s["ninja"]["maintained"])
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Days complete", f"{days_complete}/7")
+    m1.metric("Days done", f"{days_complete}/7")
     m2.metric("Ninja days", ninja_on)
     m3.metric("Ninja broken", ninja_broken)
 
@@ -355,28 +596,22 @@ def _render_kid_history(kid: dict, shown_week: date) -> None:
     else:
         st.dataframe(_heatmap_styler(summary), use_container_width=True)
 
-    # Ninja notes for the week — only show rows that have a note.
     notes = [(s["day"], s["ninja"]["note"]) for s in summary if s["ninja"] and s["ninja"]["note"]]
     if notes:
-        with st.expander("🥷 Ninja notes", expanded=False):
+        with st.expander("🥷 Ninja notes"):
             for d, note in notes:
                 st.markdown(f"- **{d.strftime('%a %d %b')}** — {note}")
 
-    # Weekly rewards ledger.
     week_end = shown_week + timedelta(days=7)
     claims = db.list_reward_claims(kid["id"], shown_week, week_end)
     if claims:
-        badges = []
-        for c in claims:
-            label = _REWARD_LABELS.get(c["reward_type"], c["reward_type"])
-            badges.append(f"✅ {label} ({c['period_start']})")
+        badges = [f"✅ {_REWARD_LABELS.get(c['reward_type'], c['reward_type'])}" for c in claims]
         st.caption("  ·  ".join(badges))
     else:
         st.caption("_No rewards claimed this week._")
 
 
 def _render_history_tab(kids: list[dict], current_week_start: date) -> None:
-    # Track the displayed week in session state so prev/next keep context.
     if "history_week" not in st.session_state:
         st.session_state["history_week"] = current_week_start
 
@@ -384,41 +619,40 @@ def _render_history_tab(kids: list[dict], current_week_start: date) -> None:
     today_week = db.week_start(date.today())
     next_disabled = shown + timedelta(days=7) > today_week
 
+    # Week navigator — compact on phone.
     nav_prev, nav_label, nav_next = st.columns([1, 3, 1])
     with nav_prev:
-        if st.button("← Previous week", use_container_width=True, key="hist_prev"):
+        if st.button("←", use_container_width=True, key="hist_prev"):
             st.session_state["history_week"] = shown - timedelta(days=7)
             st.rerun()
     with nav_label:
         week_end = shown + timedelta(days=6)
         st.markdown(
-            f"#### Week of **{shown.strftime('%a %d %b %Y')}** "
-            f"→ {week_end.strftime('%a %d %b')}"
+            f"<div style='text-align:center;font-weight:600;padding-top:0.5rem'>"
+            f"Week of {shown.strftime('%a %d %b')} → {week_end.strftime('%a %d %b')}"
+            f"</div>",
+            unsafe_allow_html=True,
         )
     with nav_next:
-        if st.button(
-            "Next week →",
-            use_container_width=True,
-            key="hist_next",
-            disabled=next_disabled,
-        ):
+        if st.button("→", use_container_width=True, key="hist_next", disabled=next_disabled):
             st.session_state["history_week"] = shown + timedelta(days=7)
             st.rerun()
 
-    if st.button("Jump to this week", key="hist_today"):
-        st.session_state["history_week"] = today_week
-        st.rerun()
+    if shown != today_week:
+        if st.button("Jump to this week", key="hist_today", use_container_width=True):
+            st.session_state["history_week"] = today_week
+            st.rerun()
 
     st.divider()
 
-    cols = st.columns(len(kids))
-    for col, kid in zip(cols, kids):
-        with col:
+    kid_tabs = st.tabs([_tab_label(k) for k in kids])
+    for tab, kid in zip(kid_tabs, kids):
+        with tab:
             _render_kid_history(kid, st.session_state["history_week"])
 
 
 # --------------------------------------------------------------------------- #
-# Admin panel (PIN-gated, lives below the tabs)
+# Admin panel (PIN-gated)
 # --------------------------------------------------------------------------- #
 
 def _kid_name(kids: list[dict], kid_id: int) -> str:
