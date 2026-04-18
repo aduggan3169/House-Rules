@@ -43,7 +43,7 @@ Data flow: `app.py → db.py → SQLAlchemy engine → SQLite (local) or Postgre
 - **Phase 2** — Minimal UI loop: two columns, checkboxes, progress bars, day picker, LAN-accessible.
 - **Phase 3** — Rewards + Ninja Mode: daily/weekly eligibility, ledger, confetti, Ninja toggle + note.
 - **Phase 4** — PIN gate + admin panel: bcrypt PIN, sidebar unlock, reset/edit/override.
-- **Phase 5** — Polish: weekly summary heatmap, per-kid theming, toasts.
+- **Phase 5** — Polish: weekly summary heatmap, per-kid theming, toasts, history view. ✅ done.
 - **Phase 6** — (Later) Migration to Supabase + Streamlit Community Cloud.
 
 See repo history and commit messages for per-phase detail.

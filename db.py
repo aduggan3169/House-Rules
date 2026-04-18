@@ -409,3 +409,105 @@ def reorder_tasks(order: list[int]) -> None:
                 text("UPDATE tasks SET display_order = :o WHERE id = :i"),
                 {"o": i, "i": task_id},
             )
+
+
+# --------------------------------------------------------------------------- #
+# Aggregates for the history view
+# --------------------------------------------------------------------------- #
+
+def get_week_summary(kid_id: int, week_start_day: date) -> list[dict]:
+    """Return 7 per-day dicts for the Mon..Sun week starting week_start_day.
+
+    Each dict: {
+        "day": date,
+        "done": int,           # completions against currently-active tasks
+        "total": int,          # count of currently-active tasks
+        "all_done": bool,      # convenience: done == total and total > 0
+        "ninja": dict | None,  # {"maintained": bool, "note": str | None} or None
+    }
+
+    Uses two window queries (completions, ninja) rather than 7 x get_day, so
+    the history view stays snappy even with many weeks rendered.
+    """
+    tasks = list_tasks()
+    active_ids = {t["id"] for t in tasks}
+    total = len(tasks)
+    week_end = week_start_day + timedelta(days=7)
+
+    with _engine.connect() as conn:
+        comp_rows = conn.execute(
+            text(
+                "SELECT day, task_id FROM task_completions "
+                "WHERE kid_id = :k AND day >= :s AND day < :e"
+            ),
+            {
+                "k": kid_id,
+                "s": week_start_day.isoformat(),
+                "e": week_end.isoformat(),
+            },
+        ).all()
+        ninja_rows = conn.execute(
+            text(
+                "SELECT day, maintained, note FROM ninja_mode_days "
+                "WHERE kid_id = :k AND day >= :s AND day < :e"
+            ),
+            {
+                "k": kid_id,
+                "s": week_start_day.isoformat(),
+                "e": week_end.isoformat(),
+            },
+        ).mappings().all()
+
+    # Only count completions against tasks that are still active. Completions
+    # against deactivated tasks are preserved in the DB but excluded here so
+    # the "done/total" denominator stays coherent with the current task list.
+    done_by_day: dict[str, int] = {}
+    for day_str, task_id in comp_rows:
+        if task_id in active_ids:
+            done_by_day[day_str] = done_by_day.get(day_str, 0) + 1
+
+    ninja_by_day = {
+        r["day"]: {"maintained": bool(r["maintained"]), "note": r["note"]}
+        for r in ninja_rows
+    }
+
+    summary: list[dict] = []
+    for i in range(7):
+        d = week_start_day + timedelta(days=i)
+        key = d.isoformat()
+        done = done_by_day.get(key, 0)
+        summary.append(
+            {
+                "day": d,
+                "done": done,
+                "total": total,
+                "all_done": total > 0 and done == total,
+                "ninja": ninja_by_day.get(key),
+            }
+        )
+    return summary
+
+
+def list_reward_claims(
+    kid_id: int, period_start: date, period_end: date
+) -> list[dict]:
+    """List reward claims with period_start in [period_start, period_end).
+
+    Used by the weekly history view to show which treats / screen days were
+    claimed. Ordered by period_start then claimed_at.
+    """
+    with _engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT reward_type, period_start, claimed_at "
+                "FROM rewards_claimed "
+                "WHERE kid_id = :k AND period_start >= :s AND period_start < :e "
+                "ORDER BY period_start, claimed_at"
+            ),
+            {
+                "k": kid_id,
+                "s": period_start.isoformat(),
+                "e": period_end.isoformat(),
+            },
+        ).mappings().all()
+    return [dict(r) for r in rows]

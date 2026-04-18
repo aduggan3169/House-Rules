@@ -332,3 +332,94 @@ def test_reorder_tasks(fresh_db):
     dbmod.reorder_tasks(reversed_order)
 
     assert [t["id"] for t in dbmod.list_tasks()] == reversed_order
+
+
+# Phase 5 tests --------------------------------------------------------------
+
+def test_get_week_summary_shape_and_counts(fresh_db):
+    kid = dbmod.list_kids()[0]["id"]
+    mon = date(2026, 4, 13)
+
+    # Tick all tasks on Mon, 2 of 4 on Wed, nothing on the rest.
+    _tick_all(kid, mon)
+    tasks = dbmod.list_tasks()
+    for t in tasks[:2]:
+        dbmod.tick_task(kid, t["id"], mon + timedelta(days=2))
+
+    # Ninja maintained on Tue, broken on Fri.
+    dbmod.set_ninja_mode(kid, mon + timedelta(days=1), True, "Lunch out")
+    dbmod.set_ninja_mode(kid, mon + timedelta(days=4), False, "Meltdown")
+
+    summary = dbmod.get_week_summary(kid, mon)
+    assert len(summary) == 7
+    assert [s["day"] for s in summary] == [
+        mon + timedelta(days=i) for i in range(7)
+    ]
+
+    # Task counts.
+    assert summary[0]["done"] == 4 and summary[0]["all_done"] is True
+    assert summary[2]["done"] == 2 and summary[2]["all_done"] is False
+    assert summary[1]["done"] == 0 and summary[1]["all_done"] is False
+
+    # Ninja payloads.
+    assert summary[1]["ninja"] == {"maintained": True, "note": "Lunch out"}
+    assert summary[4]["ninja"] == {"maintained": False, "note": "Meltdown"}
+    assert summary[0]["ninja"] is None
+
+
+def test_get_week_summary_excludes_deactivated_tasks(fresh_db):
+    """A completion against a deactivated task must not inflate `done`, and
+    the task must not be counted in `total` either."""
+    kid = dbmod.list_kids()[0]["id"]
+    mon = date(2026, 4, 13)
+
+    _tick_all(kid, mon)
+    assert dbmod.get_week_summary(kid, mon)[0]["total"] == 4
+
+    # Deactivate one task after ticking.
+    first = dbmod.list_tasks()[0]
+    dbmod.deactivate_task(first["id"])
+
+    summary = dbmod.get_week_summary(kid, mon)
+    assert summary[0]["total"] == 3
+    assert summary[0]["done"] == 3  # historical tick against deactivated excluded
+    assert summary[0]["all_done"] is True
+
+
+def test_get_week_summary_scopes_by_kid_and_week(fresh_db):
+    cillian, fionn = [k["id"] for k in dbmod.list_kids()]
+    mon = date(2026, 4, 13)
+    next_mon = mon + timedelta(days=7)
+
+    _tick_all(cillian, mon)
+    _tick_all(cillian, next_mon)
+    _tick_all(fionn, mon)
+
+    this_week = dbmod.get_week_summary(cillian, mon)
+    next_week = dbmod.get_week_summary(cillian, next_mon)
+    other_kid = dbmod.get_week_summary(fionn, next_mon)
+
+    assert this_week[0]["all_done"] is True
+    assert all(not s["all_done"] for s in this_week[1:])
+    assert next_week[0]["all_done"] is True
+    assert all(not s["all_done"] for s in other_kid)
+
+
+def test_list_reward_claims_window(fresh_db):
+    kid = dbmod.list_kids()[0]["id"]
+    mon = date(2026, 4, 13)
+    thu = mon + timedelta(days=3)
+    next_mon = mon + timedelta(days=7)
+
+    dbmod.claim_reward(kid, dbmod.REWARD_DAILY_SCREEN, mon)
+    dbmod.claim_reward(kid, dbmod.REWARD_DAILY_SCREEN, thu)
+    dbmod.claim_reward(kid, dbmod.REWARD_WEEKLY_TREAT, mon)
+    dbmod.claim_reward(kid, dbmod.REWARD_DAILY_SCREEN, next_mon)
+
+    claims = dbmod.list_reward_claims(kid, mon, next_mon)
+    assert len(claims) == 3
+    types = sorted({c["reward_type"] for c in claims})
+    assert types == [dbmod.REWARD_DAILY_SCREEN, dbmod.REWARD_WEEKLY_TREAT]
+
+    # The claim in the following week must be excluded.
+    assert all(c["period_start"] < next_mon.isoformat() for c in claims)
