@@ -3,8 +3,12 @@
 All database access goes through this module. app.py must not import
 SQLAlchemy directly. Functions take and return plain Python types
 (dicts, lists, primitives) so the storage backend is swappable
-(SQLite now, Postgres/Supabase later) by changing only DATABASE_URL
-and, if needed, the tiny engine-construction block at the top.
+(SQLite locally, Postgres/Supabase on the cloud) by changing only
+DATABASE_URL.
+
+Secrets (DATABASE_URL, etc.) are read from Streamlit's st.secrets
+first (used by Streamlit Community Cloud) and fall back to .env /
+os.environ for local development.
 """
 
 from __future__ import annotations
@@ -19,6 +23,22 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 load_dotenv()
+
+
+def _get_secret(key: str, default: str | None = None) -> str | None:
+    """Read a secret from st.secrets (Streamlit Cloud) or os.environ (local).
+
+    st.secrets is only available when running inside Streamlit, so we
+    catch broadly to keep db.py importable during tests.
+    """
+    try:
+        import streamlit as st  # noqa: F811
+
+        if hasattr(st, "secrets") and key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.environ.get(key, default)
 
 # Default to a local SQLite file if DATABASE_URL is unset (dev convenience).
 _DEFAULT_URL = "sqlite:///./data/house_rules.db"
@@ -39,7 +59,7 @@ REWARD_NINJA_TREAT = "ninja_treat"
 def _make_engine(url: str | None = None) -> Engine:
     """Create an Engine. For SQLite, ensure the parent dir exists and
     enable foreign keys (off by default in SQLite)."""
-    url = url or os.environ.get("DATABASE_URL", _DEFAULT_URL)
+    url = url or _get_secret("DATABASE_URL", _DEFAULT_URL)
     if url.startswith("sqlite"):
         db_path = url.split("sqlite:///", 1)[-1]
         if db_path and db_path != ":memory:":
@@ -86,8 +106,18 @@ def week_start(day: date) -> date:
 # --------------------------------------------------------------------------- #
 
 def init_db(schema_path: str | Path | None = None) -> None:
-    """Apply schema.sql and ensure default tasks exist. Idempotent."""
-    schema_path = Path(schema_path or Path(__file__).parent / "schema.sql")
+    """Apply schema DDL and ensure default tasks exist. Idempotent.
+
+    Picks schema_postgres.sql when the engine points at Postgres,
+    schema.sql for SQLite. An explicit `schema_path` overrides both
+    (used by tests).
+    """
+    if schema_path is None:
+        dialect = _engine.dialect.name
+        filename = "schema_postgres.sql" if dialect == "postgresql" else "schema.sql"
+        schema_path = Path(__file__).parent / filename
+    else:
+        schema_path = Path(schema_path)
     sql = schema_path.read_text()
     with _engine.begin() as conn:
         for stmt in _split_sql(sql):
@@ -362,14 +392,14 @@ def add_task(label: str) -> int:
         max_order = conn.execute(
             text("SELECT COALESCE(MAX(display_order), 0) FROM tasks")
         ).scalar_one()
-        result = conn.execute(
+        row = conn.execute(
             text(
                 "INSERT INTO tasks (label, display_order, active) "
-                "VALUES (:label, :order, 1)"
+                "VALUES (:label, :order, 1) RETURNING id"
             ),
             {"label": label, "order": max_order + 1},
-        )
-        return int(result.lastrowid)
+        ).first()
+        return int(row[0])
 
 
 def rename_task(task_id: int, new_label: str) -> None:
