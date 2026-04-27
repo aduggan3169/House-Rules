@@ -28,7 +28,23 @@ import db
 
 st.set_page_config(page_title="House Rules", page_icon="🏡", layout="centered")
 
-db.init_db()
+try:
+    db.init_db()
+except Exception as _db_init_err:
+    st.error(
+        f"⚠️ **Database connection failed.** Ticks will not be saved.\n\n"
+        f"Check that `DATABASE_URL` is set correctly in Streamlit secrets.\n\n"
+        f"```\n{_db_init_err}\n```"
+    )
+    st.stop()
+
+_db_ok, _db_err = db.check_connection()
+if not _db_ok:
+    st.error(
+        f"⚠️ **Cannot reach the database.** Ticks will not be saved.\n\n"
+        f"```\n{_db_err}\n```"
+    )
+    st.stop()
 
 
 # --------------------------------------------------------------------------- #
@@ -369,10 +385,13 @@ def _render_tasks(kid: dict, day: date, tasks: list[dict], completions: dict) ->
             _day: date = day,
             _key: str = key,
         ) -> None:
-            if st.session_state[_key]:
-                db.tick_task(_kid_id, _task_id, _day)
-            else:
-                db.untick_task(_kid_id, _task_id, _day)
+            try:
+                if st.session_state[_key]:
+                    db.tick_task(_kid_id, _task_id, _day)
+                else:
+                    db.untick_task(_kid_id, _task_id, _day)
+            except Exception as exc:
+                st.toast(f"❌ Couldn't save tick — database error: {exc}", icon="❌")
 
         st.checkbox(task["label"], key=key, on_change=_on_change)
 

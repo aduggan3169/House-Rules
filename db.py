@@ -98,6 +98,20 @@ def get_engine() -> Engine:
     return _engine
 
 
+def check_connection() -> tuple[bool, str]:
+    """Ping the database. Returns (ok, error_message).
+
+    Runs a trivial SELECT so we get a meaningful error early — before any
+    user action — rather than a raw SQLAlchemy traceback mid-session.
+    """
+    try:
+        with _engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
 # --------------------------------------------------------------------------- #
 # Date helpers
 # --------------------------------------------------------------------------- #
