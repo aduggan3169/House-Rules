@@ -750,23 +750,23 @@ def _render_revoke_claim(
 
 
 def _render_manage_tasks() -> None:
-    st.caption(
-        "Add, rename, reorder, or deactivate tasks. Deactivated tasks are hidden "
-        "from the tick view but their history is preserved."
-    )
+    """Task list editor — add, rename, reorder, deactivate, or delete."""
 
     active = db.list_tasks(include_inactive=False)
     all_tasks = db.list_tasks(include_inactive=True)
     inactive = [t for t in all_tasks if not t["active"]]
 
-    st.markdown("**Active tasks**")
+    # ── Active tasks ──────────────────────────────────────────────────────── #
+    st.markdown("#### Active tasks")
     if not active:
-        st.caption("_None. Add one below._")
+        st.caption("_No active tasks. Add one below._")
 
     for idx, task in enumerate(active):
-        cols = st.columns([6, 1, 1, 2])
+        # Each row: [label input] [↑] [↓] [Deactivate] [Delete]
+        cols = st.columns([5, 1, 1, 2, 2])
+
         with cols[0]:
-            rename_key = f"admin_rename_{task['id']}"
+            rename_key = f"settings_rename_{task['id']}"
             if rename_key not in st.session_state:
                 st.session_state[rename_key] = task["label"]
             new_label = st.text_input(
@@ -776,76 +776,155 @@ def _render_manage_tasks() -> None:
             )
             if new_label.strip() and new_label != task["label"]:
                 db.rename_task(task["id"], new_label.strip())
+                st.toast(f'Renamed to \u201c{new_label.strip()}\u201d')
                 st.rerun()
+
         with cols[1]:
-            if st.button("↑", key=f"admin_up_{task['id']}", disabled=(idx == 0)):
+            if st.button("↑", key=f"settings_up_{task['id']}", disabled=(idx == 0)):
                 order = [t["id"] for t in active]
                 order[idx - 1], order[idx] = order[idx], order[idx - 1]
                 db.reorder_tasks(order)
                 st.rerun()
+
         with cols[2]:
             if st.button(
                 "↓",
-                key=f"admin_down_{task['id']}",
+                key=f"settings_down_{task['id']}",
                 disabled=(idx == len(active) - 1),
             ):
                 order = [t["id"] for t in active]
                 order[idx], order[idx + 1] = order[idx + 1], order[idx]
                 db.reorder_tasks(order)
                 st.rerun()
+
         with cols[3]:
             if st.button(
-                "Deactivate",
-                key=f"admin_deact_{task['id']}",
-                type="secondary",
+                "Hide",
+                key=f"settings_deact_{task['id']}",
                 use_container_width=True,
+                help="Hides the task from the tick view. History is preserved.",
             ):
                 db.deactivate_task(task["id"])
+                st.toast(f'\u201c{task["label"]}\u201d hidden')
                 st.rerun()
 
+        with cols[4]:
+            # Confirm-before-delete: first press sets a flag, second press deletes.
+            confirm_key = f"settings_del_confirm_{task['id']}"
+            has_history = db.task_has_history(task["id"])
+            if st.session_state.get(confirm_key):
+                if st.button(
+                    "Sure?",
+                    key=f"settings_del_go_{task['id']}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    db.delete_task(task["id"])
+                    st.session_state.pop(confirm_key, None)
+                    st.toast(f'\u201c{task["label"]}\u201d deleted')
+                    st.rerun()
+            else:
+                help_text = (
+                    "⚠️ This task has completion history — deleting it will "
+                    "remove all past ticks permanently."
+                    if has_history
+                    else "Permanently remove this task."
+                )
+                if st.button(
+                    "Delete",
+                    key=f"settings_del_{task['id']}",
+                    use_container_width=True,
+                    help=help_text,
+                ):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+
+    # ── Inactive / hidden tasks ───────────────────────────────────────────── #
     if inactive:
-        st.markdown("**Inactive tasks**")
+        st.markdown("#### Hidden tasks")
+        st.caption("These tasks are hidden from the daily tick view. Restore or delete them.")
         for task in inactive:
-            cols = st.columns([6, 2])
+            cols = st.columns([5, 2, 2])
             with cols[0]:
-                st.text(task["label"])
+                st.markdown(f"~~{task['label']}~~")
             with cols[1]:
                 if st.button(
-                    "Reactivate",
-                    key=f"admin_react_{task['id']}",
+                    "Restore",
+                    key=f"settings_react_{task['id']}",
                     use_container_width=True,
                 ):
                     db.reactivate_task(task["id"])
+                    st.toast(f'\u201c{task["label"]}\u201d restored')
                     st.rerun()
+            with cols[2]:
+                confirm_key = f"settings_del_confirm_{task['id']}"
+                if st.session_state.get(confirm_key):
+                    if st.button(
+                        "Sure?",
+                        key=f"settings_del_go_i_{task['id']}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        db.delete_task(task["id"])
+                        st.session_state.pop(confirm_key, None)
+                        st.toast(f'\u201c{task["label"]}\u201d deleted')
+                        st.rerun()
+                else:
+                    if st.button(
+                        "Delete",
+                        key=f"settings_del_i_{task['id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
 
-    st.markdown("**Add a new task**")
-    with st.form("admin_add_task", clear_on_submit=True):
-        new_label = st.text_input("Label", placeholder="e.g. Make the bed")
-        submitted = st.form_submit_button("Add task")
+    # ── Add new task ──────────────────────────────────────────────────────── #
+    st.markdown("#### Add a task")
+    with st.form("settings_add_task", clear_on_submit=True):
+        new_label = st.text_input("Task name", placeholder="e.g. Make the bed")
+        submitted = st.form_submit_button("➕ Add task", use_container_width=True)
         if submitted and new_label.strip():
             db.add_task(new_label.strip())
+            st.toast(f'\u201c{new_label.strip()}\u201d added')
             st.rerun()
 
 
 def _render_admin(
     kids: list[dict], selected_day: date, week_start_day: date
 ) -> None:
-    tab_reset, tab_revoke, tab_tasks = st.tabs(
-        ["Reset day", "Revoke claim", "Manage tasks"]
-    )
+    tab_reset, tab_revoke = st.tabs(["Reset day", "Revoke claim"])
     with tab_reset:
         _render_reset_day(kids, selected_day)
     with tab_revoke:
         _render_revoke_claim(kids, selected_day, week_start_day)
-    with tab_tasks:
-        _render_manage_tasks()
+
+
+def _render_settings_tab() -> None:
+    """Settings tab — task management, PIN-gated."""
+    if not auth.pin_is_configured():
+        st.info(
+            "⚙️ Admin PIN not configured. Set `PARENT_PIN_HASH` in your "
+            "Streamlit secrets to enable Settings."
+        )
+        return
+
+    if not st.session_state.get("admin"):
+        st.caption("🔒 Unlock Admin in the sidebar to manage tasks.")
+        return
+
+    st.markdown("### 📋 Tasks")
+    st.caption(
+        "These are the daily rules Cillian and Fionn tick off each day. "
+        "Changes take effect immediately."
+    )
+    _render_manage_tasks()
 
 
 # --------------------------------------------------------------------------- #
 # Layout: top-level tabs + admin
 # --------------------------------------------------------------------------- #
 
-tab_today, tab_history = st.tabs(["📆 Today", "📈 History"])
+tab_today, tab_history, tab_settings = st.tabs(["📆 Today", "📈 History", "⚙️ Settings"])
 
 with tab_today:
     _render_today_tab(kids, tasks, selected_day, week_start_day)
@@ -853,8 +932,11 @@ with tab_today:
 with tab_history:
     _render_history_tab(kids, week_start_day)
 
+with tab_settings:
+    _render_settings_tab()
+
 
 if st.session_state.get("admin"):
     st.divider()
-    with st.expander("⚙️ Admin", expanded=True):
+    with st.expander("⚙️ Admin", expanded=False):
         _render_admin(kids, selected_day, week_start_day)

@@ -461,6 +461,30 @@ def reorder_tasks(order: list[int]) -> None:
             )
 
 
+def delete_task(task_id: int) -> None:
+    """Hard-delete a task and all its completion history.
+
+    The FK on task_completions has ON DELETE CASCADE, so all completion
+    rows for this task are removed automatically. Use deactivate_task
+    instead if you want to preserve history.
+    """
+    with _engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM tasks WHERE id = :i"),
+            {"i": task_id},
+        )
+
+
+def task_has_history(task_id: int) -> bool:
+    """True iff any completion rows exist for this task."""
+    with _engine.connect() as conn:
+        count = conn.execute(
+            text("SELECT COUNT(*) FROM task_completions WHERE task_id = :i"),
+            {"i": task_id},
+        ).scalar_one()
+    return count > 0
+
+
 # --------------------------------------------------------------------------- #
 # Aggregates for the history view
 # --------------------------------------------------------------------------- #
