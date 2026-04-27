@@ -60,13 +60,19 @@ def _make_engine(url: str | None = None) -> Engine:
     """Create an Engine. For SQLite, ensure the parent dir exists and
     enable foreign keys (off by default in SQLite)."""
     url = url or _get_secret("DATABASE_URL", _DEFAULT_URL)
-    if url.startswith("sqlite"):
+    is_postgres = url.startswith("postgresql") or url.startswith("postgres")
+
+    if not is_postgres:
         db_path = url.split("sqlite:///", 1)[-1]
         if db_path and db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(url, future=True)
 
-    if url.startswith("sqlite"):
+    # Supabase requires SSL. Pass it as a connect_arg so it works whether or
+    # not ?sslmode=require is already appended to the connection string.
+    connect_args = {"sslmode": "require"} if is_postgres else {}
+    engine = create_engine(url, future=True, connect_args=connect_args)
+
+    if not is_postgres:
         from sqlalchemy import event
 
         @event.listens_for(engine, "connect")
